@@ -1,0 +1,81 @@
+blueprint:
+  name: Fan Profile Controller (Target + Override)
+  description: >-
+    Apply the selected logical profile while the virtual fan/heater is on.
+    Override takes precedence over target.
+    Shares the power execution gate rather than using a separate profile gate.
+    Application is suppressed when power override is off.
+    Does not trigger on actual actuator state changes.
+  domain: automation
+  author: juan
+  input:
+    actuator_entity:
+      name: Virtual fan actuator
+      selector:
+        entity:
+          domain: fan
+    actuator_key:
+      name: Profile map device key
+      selector:
+        text: {}
+    profile_target:
+      name: Profile target
+      selector:
+        entity:
+          domain: [sensor, input_select]
+    profile_override:
+      name: Profile override
+      selector:
+        entity:
+          domain: [sensor, input_select]
+    power_blocked:
+      name: Power blocked (unblock resync)
+      selector:
+        entity:
+          domain: binary_sensor
+    power_override:
+      name: Power override
+      selector:
+        entity:
+          domain: [sensor, input_select]
+mode: restart
+max_exceeded: silent
+variables:
+  actuator: !input actuator_entity
+  actuator_key: !input actuator_key
+  target_entity: !input profile_target
+  override_entity: !input profile_override
+  power_blocked_entity: !input power_blocked
+  power_override_entity: !input power_override
+  selected_profile: >-
+    {% set valid = {'bath_fan':['lv_1','lv_2','lv_3','lv_4','lv_5'],
+                    'aisle_fan':['low','high'], 'kitchen_fan':['low','high'],
+                    'bath_heater':['dry_low','dry_high','heat_low','heat_high',
+                                   'cool_low','cool_high','vent_low','vent_high']} %}
+    {% set o = states(profile_override_entity if profile_override_entity is defined else override_entity) %}
+    {% set t = states(profile_target_entity if profile_target_entity is defined else target_entity) %}
+    {{ o if o in valid.get(actuator_key, []) else (t if t in valid.get(actuator_key, []) else 'invalid') }}
+
+triggers:
+  - trigger: state
+    entity_id: !input profile_target
+  - trigger: state
+    entity_id: !input profile_override
+  - trigger: state
+    entity_id: !input power_blocked
+    to: 'off'
+actions:
+  - condition: template
+    value_template: >-
+      {% set cfg = {'bath_fan':['lv_1','lv_2','lv_3','lv_4','lv_5'],
+                    'aisle_fan':['low','high'],
+                    'kitchen_fan':['low','high'],
+                    'bath_heater':['dry_low','dry_high','heat_low','heat_high',
+                                   'cool_low','cool_high','vent_low','vent_high']} %}
+      {{ is_state(actuator,'on') and is_state(power_blocked_entity,'off')
+         and states(power_override_entity) != 'off'
+         and selected_profile | trim in cfg.get(actuator_key, []) }}
+  - action: script.fan_profile_apply
+    data:
+      actuator: "{{ actuator_key }}"
+      target_profile: "{{ selected_profile | trim }}"

@@ -1,0 +1,69 @@
+# Reference excerpt: Guest curtain target, execution gate, and manual detection.
+# Upstream position assignment/stability, watchdog, refresh, waking and reset logic are omitted.
+# The accepted position helper is populated by external assignment logic.
+# The controller and manual detection blueprints are included in this repository.
+curtain:
+  input_boolean:
+    guest_crt_manual: {name: Guest Curtain Manual Lock, icon: mdi:gesture-tap}
+    guest_crt_wake_active: {name: Guest Curtain Waking Active, icon: mdi:weather-sunset-up, initial: 'off'}
+    guest_crt_auto_moving: {name: Guest Curtain Auto-moving Attribution Token, icon: mdi:robot}
+
+  input_select:
+    guest_crt_position_accepted: { name: Guest Curtain Accepted Position, options: ["0", "30", "70", "100"]}
+
+  timer:
+    guest_crt_cooldown: {name: Guest Curtain Wake Cooldown, duration: 00:05:00}
+
+  template:
+    - binary_sensor:
+        - name: Curtain guest auto
+          unique_id: curtain_guest_auto
+          state: >
+            {{
+              is_state('input_boolean.guest_quiet_mode', 'off')
+              and is_state('input_boolean.guest_crt_manual', 'off')
+              and is_state('input_boolean.guest_crt_wake_active', 'off')
+              and is_state('timer.guest_crt_cooldown', 'idle')
+            }}
+
+    - sensor:
+        - name: Curtain Guest Target
+          unique_id: curtain_guest_target
+          availability: >-
+            {{ is_state('sensor.day_time_phase','night')
+               or (states('sensor.day_time_phase') in ['bright','dim']
+                 and (is_state('binary_sensor.house_presence','off')
+                   or (is_state('binary_sensor.house_presence','on')
+                     and states('input_select.guest_crt_position_accepted')
+                       in ['0','30','70','100']))) }}
+          state: >-
+            {% if is_state('sensor.day_time_phase','night') %}
+              0
+            {% elif is_state('binary_sensor.house_presence','off') %}
+              0
+            {% else %}
+              {{ states('input_select.guest_crt_position_accepted') }}
+            {% endif %}
+
+  automation:
+    - id: guest_curtain_manual_flag
+      alias: '[Guest] Curtain Manual Flag'
+      use_blueprint:
+        path: juan/curtain/curtain_manual_bp.yaml
+        input:
+          running_sensor: binary_sensor.crt_guest_running
+          auto_moving_flag: input_boolean.guest_crt_auto_moving
+          wake_active_flag: input_boolean.guest_crt_wake_active
+          manual_flag: input_boolean.guest_crt_manual
+          quiet_flag: input_boolean.guest_quiet_mode
+
+    - id: guest_curtain_controller
+      alias: '[Guest] Curtain Step Controller'
+      use_blueprint:
+        path: juan/curtain/curtain_controller_bp.yaml
+        input:
+          cover_entity: cover.crt_guest
+          target_entity: sensor.curtain_guest_target
+          gate_entity: binary_sensor.curtain_guest_auto
+          running_entity: binary_sensor.crt_guest_running
+          auto_moving_flag: input_boolean.guest_crt_auto_moving

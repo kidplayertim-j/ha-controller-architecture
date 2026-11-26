@@ -1,0 +1,106 @@
+blueprint:
+  name: Profile Controller (Target + Optional Override)
+  description: >-
+    Apply a logical profile only while the actuator light is on.
+    A valid profile override (1-15) takes priority over the target.
+    None, unknown, unavailable, or any invalid override value delegates to target.
+    Invalid target suspends profile application only when no valid override exists.
+    Profile blocked suspends automatic profile application.
+    Application is also suppressed when power override is off.
+    Does not trigger on actuator state changes.
+  domain: automation
+  author: juan
+  input:
+    actuator_key:
+      name: Actuator key
+      selector:
+        text: {}
+    actuator_light:
+      name: Actuator light
+      selector:
+        entity:
+          domain: light
+    profile_target:
+      name: Profile target
+      selector:
+        entity:
+          domain: [sensor, input_select]
+    profile_override:
+      name: Profile override (optional)
+      description: >-
+        Only valid profile values (1-15) override the target.
+        All other values delegate to target.
+        Defaults to input_select.void_sel (always none).
+      default: input_select.void_sel
+      selector:
+        entity:
+          domain: [sensor, input_select]
+    profile_blocked:
+      name: Profile blocked (optional)
+      description: >-
+        Binary sensor on/off; the default input_select.void_sel (none)
+        is treated as not blocked.
+      default: input_select.void_sel
+      selector:
+        entity:
+          domain: [binary_sensor, input_select]
+    power_override:
+      name: Power override (optional)
+      default: input_select.void_sel
+      selector:
+        entity:
+          domain:
+            - sensor
+            - input_select
+
+mode: restart
+max_exceeded: silent
+
+variables:
+  actuator_key: !input actuator_key
+  actuator: !input actuator_light
+  target_entity: !input profile_target
+  override_entity: !input profile_override
+  blocked_entity: !input profile_blocked
+  selected_profile: >-
+    {% set valid = ['1','2','3','4','5','6','7','8','9','10','11','12','13','14','15'] %}
+    {% set t = states(target_entity) %}
+    {% set o = states(override_entity) %}
+    {% if o in valid %}
+      {{ o }}
+    {% elif t in valid %}
+      {{ t }}
+    {% else %}
+      invalid
+    {% endif %}
+  power_override_entity: !input power_override
+
+triggers:
+  - trigger: state
+    entity_id: !input profile_target
+    id: target
+  - trigger: state
+    entity_id: !input profile_override
+    id: override
+  - trigger: state
+    entity_id: !input profile_blocked
+    to: 'off'
+    id: unblock
+
+actions:
+  - condition: template
+    value_template: >-
+      {{
+        is_state(actuator, 'on')
+        and states(blocked_entity) in ['off', 'none']
+        and states(power_override_entity) != 'off'
+        and (selected_profile | string)
+          in ['1','2','3','4','5','6','7','8','9','10','11','12','13','14','15']
+      }}
+
+  - action: script.actuator_scene_apply
+    data:
+      actuator: "{{ actuator_key }}"
+      target_profile: "{{ selected_profile | string }}"
+      respect_lock: false
+      source: profile_controller

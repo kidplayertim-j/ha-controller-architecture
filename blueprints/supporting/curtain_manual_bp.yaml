@@ -1,0 +1,83 @@
+blueprint:
+  name: "[Curtain] Manual Detection (Running → Manual Lock)"
+  description: >
+    Running off → on is classified exactly once.
+    If auto_moving is on, consume that token and do not set manual_flag.
+    Otherwise, ignore movement during waking or quiet mode, or set manual_flag on.
+    Manual flag reset remains the responsibility of other automations.
+  domain: automation
+
+  input:
+    running_sensor:
+      name: Curtain running state (binary_sensor)
+      selector:
+        entity:
+          domain: binary_sensor
+
+    auto_moving_flag:
+      name: Automatic movement flag (optional input_boolean)
+      default: input_select.void_sel
+      selector:
+        entity: {}
+
+    wake_active_flag:
+      name: Wake routine active flag (optional input_boolean)
+      default: input_select.void_sel
+      selector:
+        entity: {}
+
+    manual_flag:
+      name: Manual lock flag (input_boolean)
+      selector:
+        entity:
+          domain: input_boolean
+
+    quiet_flag:
+      name: Quiet mode flag (optional input_boolean)
+      default: input_select.void_sel
+      selector:
+        entity: {}
+
+trigger:
+  - platform: state
+    entity_id: !input running_sensor
+    from: "off"
+    to: "on"
+
+variables:
+  v_auto_flag: !input auto_moving_flag
+  v_wake_flag: !input wake_active_flag
+  v_manual_flag: !input manual_flag
+  v_quiet_flag: !input quiet_flag
+  _void_select: 'input_select.void_sel' 
+  _auto_on: >-
+    {{ v_auto_flag != _void_select and is_state(v_auto_flag, 'on') }}
+  _wake_on: >-
+    {{ v_wake_flag != _void_select and is_state(v_wake_flag, 'on') }}
+  _quiet_on: >-
+    {{ v_quiet_flag != _void_select and is_state(v_quiet_flag, 'on') }}
+
+action:
+  - choose:
+      # Consume the auto token in the same automation that classifies Running ON.
+      # Do not let a separate cleanup automation race with this classification.
+      - conditions:
+          - condition: template
+            value_template: "{{ _auto_on | bool }}"
+        sequence:
+          - service: input_boolean.turn_off
+            target:
+              entity_id: "{{ v_auto_flag }}"
+      - conditions:
+          - condition: template
+            value_template: >-
+              {{ not (_wake_on | bool)
+                 and not (_quiet_on | bool) }}
+        sequence:
+          - service: input_boolean.turn_on
+            target:
+              entity_id: !input manual_flag
+    default: []
+
+mode: single
+max_exceeded: silent

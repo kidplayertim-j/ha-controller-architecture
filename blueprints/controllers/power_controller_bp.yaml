@@ -1,0 +1,170 @@
+blueprint:
+  name: Power Controller (Target + Optional Override)
+  description: >-
+    Reconcile an on/off actuator using a power target and optional override.
+    A valid override (on/off) takes priority over the target.
+    None, unknown, unavailable, or any invalid override value delegates to target.
+    Invalid target suspends execution only when no valid override is available.
+    Power blocked prevents all actions.
+    For scene-based power-on, a blocked profile uses its last current profile.
+    Does not react to actuator state changes or manage hold timers.
+  domain: automation
+  author: juan
+  input:
+    actuator_entity:
+      name: Power actuator
+      selector:
+        entity:
+          domain: [light, switch, fan]
+    power_target:
+      name: Power target (binary_sensor)
+      selector:
+        entity:
+          domain: binary_sensor
+    power_override:
+      name: Power override (optional)
+      description: >-
+        Sensor/input_select with states on, off, none.
+        Only on/off overrides the target; all other values delegate to target.
+        Defaults to input_select.void_sel (always none).
+      default: input_select.void_sel
+      selector:
+        entity:
+          domain: [sensor, input_select]
+    power_blocked:
+      name: Power blocked (binary_sensor)
+      selector:
+        entity:
+          domain: binary_sensor
+    on_mode:
+      name: Power-on operation
+      description: Simple turn_on or apply a logical profile to power on a light.
+      default: simple
+      selector:
+        select:
+          options:
+            - label: Simple turn_on
+              value: simple
+            - label: Apply profile via script.actuator_scene_apply
+              value: profile
+    actuator_key:
+      name: Scene actuator key (profile mode)
+      description: Key used by script.actuator_scene_apply, e.g. dining_hue.
+      default: ""
+      selector:
+        text: {}
+    profile_target:
+      name: Profile target (profile mode)
+      default: ""
+      selector:
+        entity:
+          domain: [sensor, input_select]
+    profile_override:
+      name: Profile override (optional, profile mode)
+      default: input_select.void_sel
+      selector:
+        entity:
+          domain: [sensor, input_select]
+    profile_blocked:
+      name: Profile blocked (profile mode)
+      default: ""
+      selector:
+        entity:
+          domain: binary_sensor
+    current_profile:
+      name: Last applied profile (profile mode)
+      default: ""
+      selector:
+        entity:
+          domain: [sensor, input_select]
+
+mode: restart
+max_exceeded: silent
+
+variables:
+  actuator: !input actuator_entity
+  target_entity: !input power_target
+  override_entity: !input power_override
+  blocked_entity: !input power_blocked
+  on_mode: !input on_mode
+  actuator_key: !input actuator_key
+  profile_target_entity: !input profile_target
+  profile_override_entity: !input profile_override
+  profile_blocked_entity: !input profile_blocked
+  current_profile_entity: !input current_profile
+  power_goal: >-
+    {% set t = states(target_entity) %}
+    {% set o = states(override_entity) %}
+    {% if o in ['on', 'off'] %}
+      {{ o }}
+    {% elif t in ['on', 'off'] %}
+      {{ t }}
+    {% else %}
+      invalid
+    {% endif %}
+
+  selected_profile: >-
+    {% set valid = ['1','2','3','4','5','6','7','8','9','10','11','12','13','14','15'] %}
+    {% set b = states(profile_blocked_entity) if profile_blocked_entity else 'off' %}
+    {% set c = states(current_profile_entity) if current_profile_entity else 'unknown' %}
+    {% set t = states(profile_target_entity) if profile_target_entity else 'unknown' %}
+    {% set o = states(profile_override_entity) %}
+    {% if b == 'on' and c in valid %}
+      {{ c }}
+    {% elif b == 'off' and o in valid %}
+      {{ o }}
+    {% elif b == 'off' and t in valid %}
+      {{ t }}
+    {% else %}
+      invalid
+    {% endif %}
+    
+triggers:
+  - trigger: state
+    entity_id: !input power_target
+    id: target
+  - trigger: state
+    entity_id: !input power_override
+    id: override
+  - trigger: state
+    entity_id: !input power_blocked
+    # from: 'on'
+    to: 'off'
+    id: unblock
+
+actions:
+  - condition: template
+    value_template: >-
+      {{ is_state(blocked_entity, 'off') and power_goal in ['on', 'off'] }}
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ power_goal == 'off' and is_state(actuator, 'on') }}"
+        sequence:
+          - action: homeassistant.turn_off
+            target:
+              entity_id: !input actuator_entity
+      - conditions:
+          - condition: template
+            value_template: "{{ power_goal == 'on' and is_state(actuator, 'off') }}"
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: >-
+                      {{ on_mode == 'profile' and actuator_key | length > 0
+                        and selected_profile | string in ['1','2','3','4','5','6','7','8','9','10','11','12','13','14','15'] }}
+                sequence:
+                  - action: script.actuator_scene_apply
+                    data:
+                      actuator: "{{ actuator_key }}"
+                      target_profile: "{{ selected_profile }}"
+                      respect_lock: false
+                      source: power_controller
+              - conditions:
+                  - condition: template
+                    value_template: "{{ on_mode == 'simple' }}"
+                sequence:
+                  - action: homeassistant.turn_on
+                    target:
+                      entity_id: !input actuator_entity

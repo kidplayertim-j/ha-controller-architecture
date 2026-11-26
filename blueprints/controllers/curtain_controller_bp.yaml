@@ -1,0 +1,103 @@
+# Target executor only. The manual detection blueprint consumes the attribution
+# token when the running sensor changes from off to on.
+blueprint:
+  name: "[Curtain] Discrete Target Controller"
+  description: >
+    Executes an externally determined position target when the auto gate permits
+    execution and the curtain is stopped. Position assignment, illuminance
+    decisions, direction locking, and settling logic are outside this blueprint.
+    The auto-moving flag is an attribution token, not a movement-state indicator.
+    A position difference greater than 5 percentage points is required.
+    The token expires after 3 seconds if not consumed by manual detection.
+  domain: automation
+  author: juan
+  input:
+    cover_entity:
+      name: Curtain cover
+      selector:
+        entity: {domain: cover}
+    target_entity:
+      name: Target sensor
+      selector:
+        entity: {domain: sensor}
+    gate_entity:
+      name: Auto gate
+      selector:
+        entity: {domain: binary_sensor}
+    running_entity:
+      name: Running sensor
+      selector:
+        entity: {domain: binary_sensor}
+    auto_moving_flag:
+      name: Auto-moving attribution token
+      selector:
+        entity: {domain: input_boolean}
+
+variables:
+  cover_entity: !input cover_entity
+  target_entity: !input target_entity
+  gate_entity: !input gate_entity
+  running_entity: !input running_entity
+  auto_flag: !input auto_moving_flag
+
+triggers:
+  - trigger: state
+    entity_id: !input target_entity
+    id: target_changed
+  - trigger: state
+    entity_id: !input gate_entity
+    to: "on"
+    id: gate_open
+  - trigger: state
+    entity_id: !input running_entity
+    from: "on"
+    to: "off"
+    id: running_stopped
+  - trigger: state
+    entity_id: !input auto_moving_flag
+    to: "on"
+    for: "00:00:03"
+    id: auto_timeout
+  - trigger: homeassistant
+    event: start
+    id: startup
+
+actions:
+  # Expire an unconsumed attribution token without immediately retrying.
+  - choose:
+      - conditions: "{{ trigger.id == 'auto_timeout' }}"
+        sequence:
+          - action: input_boolean.turn_off
+            target:
+              entity_id: "{{ auto_flag }}"
+          - stop: "Attribution token timed out; no immediate retry"
+
+  # Check execution permission, applicability, and target validity.
+  - condition: template
+    value_template: >-
+      {{ is_state(gate_entity,'on')
+         and is_state(running_entity,'off')
+         and is_state(auto_flag,'off')
+         and state_attr(cover_entity,'current_position') is not none
+         and is_number(states(target_entity))
+         and 0 <= states(target_entity) | float <= 100 }}
+
+  - variables:
+      actual: "{{ state_attr(cover_entity,'current_position') | float }}"
+      desired: "{{ states(target_entity) | float }}"
+
+  - condition: template
+    value_template: "{{ (desired | float - actual | float) | abs > 5 }}"
+
+  # Mark the command as automatic before requesting movement.
+  - action: input_boolean.turn_on
+    target:
+      entity_id: "{{ auto_flag }}"
+  - action: cover.set_cover_position
+    target:
+      entity_id: "{{ cover_entity }}"
+    data:
+      position: "{{ desired | int }}"
+
+mode: single
+max_exceeded: silent

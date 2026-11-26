@@ -1,0 +1,52 @@
+blueprint:
+  name: Power Minimum Guard Timer
+  description: >
+    Start minimum-on timer when actuator turns on.
+    Cancel timer when actuator turns off.
+    Does not control actuator directly.
+  domain: automation
+
+  input:
+    actuator_entity:
+      name: Actuator
+      selector:
+        entity:
+          domain: light
+
+    guard_timer:
+      name: Minimum On Guard Timer
+      selector:
+        entity:
+          domain: timer
+
+mode: restart
+
+trigger:
+  - platform: state
+    entity_id: !input actuator_entity
+    from: "off"
+    to: "on"
+    id: power_on
+
+  - platform: state
+    entity_id: !input actuator_entity
+    from: "on"
+    to: "off"
+    id: power_off
+
+variables:
+  guard_timer: !input guard_timer
+
+action:
+  - choose:
+      - conditions: "{{ trigger.id == 'power_on' }}"
+        sequence:
+          - service: timer.start
+            target:
+              entity_id: "{{ guard_timer }}"
+
+      - conditions: "{{ trigger.id == 'power_off' }}"
+        sequence:
+          - service: timer.cancel
+            target:
+              entity_id: "{{ guard_timer }}"

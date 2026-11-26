@@ -1,0 +1,76 @@
+blueprint:
+  name: Auto Pause Clear on Occupancy Change
+  description: >
+    Clear active auto-pause helpers when occupancy changes in either direction.
+    Ends an interaction/session lifecycle without making control decisions.
+
+  domain: automation
+  author: juan
+
+  input:
+    occupancy_sensor:
+      name: Occupancy sensor
+      selector:
+        entity:
+          domain:
+            - binary_sensor
+
+    auto_pause_helper:
+      name: Auto pause helper
+      selector:
+        entity:
+          domain: input_boolean
+          multiple: true
+
+    debug:
+      name: Debug
+      default: false
+      selector:
+        boolean: {}
+
+mode: restart
+max_exceeded: silent
+
+variables:
+  occ: !input occupancy_sensor
+  pause_b: !input auto_pause_helper
+  debug: !input debug
+
+trigger:
+  - id: occ_on
+    platform: state
+    entity_id: !input occupancy_sensor
+    from: "off"
+    to: "on"
+
+  - id: occ_off
+    platform: state
+    entity_id: !input occupancy_sensor
+    from: "on"
+    to: "off"
+
+condition:
+  - condition: template
+    value_template: >-
+      {{ expand(pause_b)
+         | selectattr('state', 'eq', 'on')
+         | list | count > 0 }}
+
+action:
+  - service: input_boolean.turn_off
+    target:
+      entity_id: !input auto_pause_helper
+
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ debug }}"
+        sequence:
+          - service: logbook.log
+            data:
+              name: "Auto Pause Clear"
+              message: >-
+                trig={{ trigger.id }},
+                occ={{ states(occ) }},
+                auto_pause -> off
+    default: []

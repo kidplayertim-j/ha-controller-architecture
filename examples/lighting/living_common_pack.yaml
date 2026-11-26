@@ -1,0 +1,139 @@
+# Reference excerpt: shared lighting gates, lux guard, and override inputs.
+# Upstream composition selection and expansion are intentionally omitted.
+# Combo helpers are populated by that external system in the original configuration.
+living_common_pack:
+  input_boolean:
+    living_quiet_mode: {name: Living Quiet Mode} # icon
+    living_waking_ramp:    { name: Living Light Waking Active, icon: mdi:lightbulb-on } 
+
+    living_combo_enabled: { name: Living Combo Enabled, icon: mdi:lightbulb-group} # light orchestration
+    living_reading: { name: Living Reading Activity, icon: mdi:book-open-page-variant} # activity
+    tv_focus:  {name: TV Focus, icon: mdi:movie-open}
+
+    living_power_blocked_stop:   { name: Living Auto Power-Stop, icon: mdi:hand-back-right }
+    living_power_blocked_pause:  { name: Living Auto Power-Pause, icon: mdi:pause-circle }
+    living_profile_blocked_stop: { name: Living Profile Blocked-Stop} 
+    living_profile_blocked_pause: { name: Living Profile Blocked-Pause}
+
+  input_select:
+    living_composition_key:
+      name: Living Composition
+      options: 
+      - "none"
+      - "tv_focus_brt"
+      - "tv_focus"
+      - "tv_focus_dim"
+      - "tv_brt"
+      - "tv_normal"
+      - "tv_dim"
+      - "tv_host"
+      - "reading_normal"
+      - "reading_host"
+      icon: mdi:palette
+
+    living_main_combo_scene: { name: Living Main Combo Scene, options: ["none","1","2","3","4","5","6"]}
+    living_main_combo_power: { name: Living Main Combo Power, options: ["none","off"]}
+
+    living_wallwash_combo_scene: {name: Living Wallwash Combo Scene, options: ["none","1","2","3","4","5","6","7","8"]}
+    living_wallwash_combo_power: { name: Living Wallwash Combo Power, options: ["none","off"]}
+
+    living_cabinet_combo_scene: { name: Living Cabinet Combo Scene, options: ["none","1","2","3","4","5","6","7","8"]}
+    living_cabinet_combo_power: { name: Living Cabinet Combo Power, options: ["none","off"]}
+
+
+  template:
+    - binary_sensor:
+
+        - name: "Living Power Blocked"
+          unique_id: living_power_blocked
+          state: >-
+            {% set stop = is_state('input_boolean.living_power_blocked_stop', 'on') %}
+            {% set pause = is_state('input_boolean.living_power_blocked_pause', 'on') %}
+            {% set quiet = is_state('input_boolean.living_quiet_mode', 'on') %}
+            {% set waking = is_state('input_boolean.living_waking_ramp', 'on') %}
+            {% set night = is_state('light.living_night', 'on') %}
+
+            {{ stop or pause or quiet or waking or night }}
+          icon: >-
+            {{ 'mdi:lightbulb-off' if is_state(this.entity_id, 'on')
+              else 'mdi:lightbulb-auto' }}
+
+        - name: "Living Profile Blocked"
+          unique_id: living_profile_blocked
+          state: >-
+            {% set stop = is_state('input_boolean.living_profile_blocked_stop', 'on') %}
+            {% set pause = is_state('input_boolean.living_profile_blocked_pause', 'on') %}
+            {% set waking = is_state('input_boolean.living_waking_ramp', 'on') %}
+
+            {{ stop or pause or waking }}
+          icon: >-
+            {{ 'mdi:lock' if is_state(this.entity_id, 'on')
+              else 'mdi:lock-open-outline' }}
+
+        - name: "Living TV on"
+          unique_id: living_tv_on
+          state: >-
+            {% set tv = states('media_player.living_tv_c7l') %}
+            {% set tv_on = tv not in ['off', 'unavailable', 'unknown'] %}
+
+            {{ tv_on}}
+          delay_off:
+            seconds: 8
+
+        - name: "TV Focus Active"
+          unique_id: tv_focus_active
+          state: >-
+            {{ is_state('binary_sensor.living_tv_on', 'on')
+               and is_state('input_boolean.tv_focus', 'on') }}
+          icon: mdi:television-ambient-light
+
+        # # ========== Environment ===========
+        - name: "LU Living Guard"
+          unique_id: lu_living_guard
+          state: >-
+            {% set living_lux = states('sensor.lu_living_illuminance') | float(0) %}
+            {% set dining_lux = states('sensor.lu_dining_illuminance') | float(0) %}
+
+            {% set night = is_state('sensor.day_time_phase', 'night') %}
+            {% set host = is_state('input_boolean.host_mode', 'on') %}
+            {% set reading = is_state('input_boolean.living_reading', 'on') %}
+
+            {% set kitchen_on = is_state('light.kitchen_virtual', 'on') %}
+            {% set dining_on = is_state('light.dining_hue', 'on') %}
+
+            {% set living_bright = living_lux > 50 %}
+            {% set dining_bright = dining_lux > 200
+              and not kitchen_on
+              and not dining_on %}
+
+            {{
+              not night
+              and not host
+              and not reading
+              and (living_bright or dining_bright)
+            }}
+
+          icon: >-
+            {{ 'mdi:lightbulb-on'
+              if is_state('binary_sensor.lu_living_guard', 'on')
+              else 'mdi:lightbulb-off' }}
+
+          attributes:
+            living_threshold_lux: 50
+            dining_threshold_lux: 200
+            current_living_lux: "{{ states('sensor.lu_living_illuminance') | float(0) }}"
+            current_dining_lux: "{{ states('sensor.lu_dining_illuminance') | float(0) }}"
+            kitchen_light_on: "{{ is_state('light.kitchen_virtual', 'on') }}"
+            dining_light_on: "{{ is_state('light.dining_hue', 'on') }}"
+            living_reading_mode: "{{ is_state('input_boolean.living_reading', 'on') }}"
+            host_mode: "{{ is_state('input_boolean.host_mode', 'on') }}"
+
+  automation:
+    - id: living_auto_pause_clear
+      alias: "[Living] Power Pause Clear"
+      use_blueprint:
+        path: juan/auto_pause_clear_bp.yaml
+        input:
+          occupancy_sensor: binary_sensor.living_area_presence
+          auto_pause_helper: input_boolean.living_power_blocked_pause
+          debug: false

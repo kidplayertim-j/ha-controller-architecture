@@ -1,0 +1,141 @@
+# Reference configuration: fan_profile_apply and the virtual fan are external dependencies.
+fan_kitchen_controller:
+  input_boolean:
+    kitchen_airflow_enabled: {name: Kitchen Fan - Automatic Airflow Enabled, icon: mdi:fan-auto, initial: true}
+
+  input_select:
+    kitchen_fan_power_override: {name: Kitchen Fan Power Override, options: [none, 'on', 'off']}
+    kitchen_fan_profile_override: {name: Kitchen Fan Profile Override, options: [none, low, high]}
+
+  input_number:
+    kitchen_airflow_dew_point_off: {name: Kitchen Fan - Dew Point Off Threshold, min: 10, max: 28, step: 0.5, mode: box, unit_of_measurement: "°C", initial: 16.2}
+    kitchen_airflow_dew_point_on: {name: Kitchen Fan - Dew Point Low Speed Threshold, min: 10, max: 28, step: 0.5, mode: box, unit_of_measurement: "°C", initial: 16.5}
+    kitchen_airflow_dew_point_high: {name: Kitchen Fan - Dew Point High Speed Threshold, min: 10, max: 28, step: 0.5, mode: box, unit_of_measurement: "°C", initial: 19}
+
+  template:
+  - binary_sensor:
+    - name: Kitchen Comfort Airflow Demand
+      unique_id: kitchen_comfort_airflow_demand
+      state: >-
+        {% set enabled = is_state('input_boolean.kitchen_airflow_enabled', 'on') %}
+        {% set cooling = is_state('binary_sensor.living_ac_cooling', 'on') %}
+        {% set active = is_state('binary_sensor.living_area_presence', 'on') %}
+        {% set dp = states('sensor.dewpoint_living') | float(-99) %}
+        {% set on = states('input_number.kitchen_airflow_dew_point_on') | float(18) %}
+        {% set off = states('input_number.kitchen_airflow_dew_point_off') | float(17) %}
+        {{
+          enabled and not cooling and active and
+          (
+            dp >= on or
+            (is_state(this.entity_id, 'on') and dp > off)
+          )
+        }}
+      availability: >-
+        {{ states('sensor.dewpoint_living') not in ['unknown', 'unavailable'] }}
+      delay_on: "00:01:15"
+      delay_off: "00:03:00"
+
+    - name: Kitchen Cooling Airflow Demand
+      unique_id: kitchen_cooling_airflow_demand
+      state: >-
+        {{
+          is_state('input_boolean.kitchen_airflow_enabled', 'on')
+          and is_state('binary_sensor.living_ac_cooling', 'on')
+        }}
+      delay_off: "00:03:00"
+
+    - name: Kitchen Airflow Quiet Required
+      unique_id: kitchen_airflow_quiet_required
+      state: >-
+        {{
+          is_state('input_boolean.living_quiet_mode', 'on')
+          or is_state('input_select.time_profile', '1')
+          or is_state('binary_sensor.tv_focus_active', 'on')
+        }}
+      icon: mdi:volume-low
+
+  - sensor:
+    - name: Kitchen Airflow Demand
+      unique_id: kitchen_airflow_demand
+      state: >-
+        {% if is_state('binary_sensor.kitchen_cooling_airflow_demand', 'on') %}
+          cooling_assist
+        {% elif is_state('binary_sensor.kitchen_comfort_airflow_demand', 'on') %}
+          comfort
+        {% else %}
+          off
+        {% endif %}
+      icon: mdi:air-filter
+
+    - name: Kitchen Airflow Auto Target
+      unique_id: kitchen_airflow_auto_target
+      state: >-
+        {% set demand = states('sensor.kitchen_airflow_demand') %}
+        {% set dp = states('sensor.dewpoint_living') | float(-99) %}
+        {% set temp = states('sensor.ths_living_temperature') | float(-99) %}
+        {% set high = states('input_number.kitchen_airflow_dew_point_high') | float(19) %}
+        {% set quiet = is_state('binary_sensor.kitchen_airflow_quiet_required', 'on') %}
+
+        {% if demand == 'off' %}
+          off
+        {% elif quiet %}
+          low
+        {% elif demand == 'cooling_assist' %}
+          {{ 'high' if temp >= 28 else 'low' }}
+        {% elif demand == 'comfort' %}
+          {{ 'high' if dp >= high else 'low' }}
+        {% else %}
+          low
+        {% endif %}
+      icon: mdi:fan-chevron-up
+
+  - binary_sensor:
+    - name: Kitchen Fan Power Target
+      unique_id: kitchen_fan_power_target
+      state: "{{ states('sensor.kitchen_airflow_demand') in ['cooling_assist', 'comfort'] }}"
+
+    - name: Kitchen Fan Power Blocked
+      unique_id: kitchen_fan_power_blocked
+      state: "{{ is_state('input_boolean.kitchen_fan_power_blocked_stop', 'on') }}"
+
+    sensor:
+    - name: Kitchen Fan Profile Target
+      unique_id: kitchen_fan_profile_target
+      state: "{{ states('sensor.kitchen_airflow_auto_target') if states('sensor.kitchen_airflow_auto_target') in ['low','high'] else 'low' }}"
+
+    - name: Kitchen Fan Power Reason
+      unique_id: kitchen_fan_power_reason
+      state: "{% set blocked = is_state('binary_sensor.kitchen_fan_power_blocked', 'on') %}\n{% set override = states('input_select.kitchen_fan_power_override') %}\n{% if blocked %}blocked_stop{% elif override in ['on','off'] %}override:{{ override }}{% else
+        %}baseline:{{ states('binary_sensor.kitchen_fan_power_target') }} ({{ states('sensor.kitchen_airflow_demand') }}){% endif %}"
+
+    - name: Kitchen Fan Profile Reason
+      unique_id: kitchen_fan_profile_reason
+      state: "{% set override = states('input_select.kitchen_fan_profile_override') %}\n{% if override not
+        in ['none','unknown','unavailable'] %}override:{{ override }}{% else %}baseline:{{ states('sensor.kitchen_fan_profile_target') }}{% endif
+        %}"
+
+  automation:
+  - id: kitchen_fan_power_controller
+    alias: '[FAN] Kitchen Power Controller'
+    use_blueprint:
+      path: juan/fan_controller/fan_power_controller_bp.yaml
+      input:
+        actuator_entity: fan.kitchen_circulator
+        actuator_key: kitchen_fan
+        power_target: binary_sensor.kitchen_fan_power_target
+        power_override: input_select.kitchen_fan_power_override
+        power_blocked: binary_sensor.kitchen_fan_power_blocked
+        profile_target: sensor.kitchen_fan_profile_target
+        profile_override: input_select.kitchen_fan_profile_override
+
+  - id: kitchen_fan_profile_controller
+    alias: '[FAN] Kitchen Profile Controller'
+    use_blueprint:
+      path: juan/fan_controller/fan_profile_controller_bp.yaml
+      input:
+        actuator_entity: fan.kitchen_circulator
+        actuator_key: kitchen_fan
+        profile_target: sensor.kitchen_fan_profile_target
+        profile_override: input_select.kitchen_fan_profile_override
+        power_blocked: binary_sensor.kitchen_fan_power_blocked
+        power_override: input_select.kitchen_fan_power_override

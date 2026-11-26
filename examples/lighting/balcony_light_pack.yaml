@@ -1,0 +1,123 @@
+# Reference configuration: presence, day phase and virtual light are external inputs.
+balcony_light:
+  timer:
+    balcony_power_min_guard: { name: Balcony Power Minimum On Guard, duration: "00:00:50" }
+
+  input_boolean:
+    balcony_power_blocked_stop: { name: Balcony Power Blocked-Stop, icon: mdi:hand-back-right }
+    balcony_power_blocked_pause: { name: Balcony Power Blocked-Pause, icon: mdi:pause-circle }
+
+  template:
+    - sensor:
+        - name: "Balcony Power Override"
+          unique_id: balcony_power_override
+          state: "{{ 'none' }}"
+
+        - name: "Balcony Power Reason"
+          unique_id: balcony_power_reason
+          state: >-
+            {% set blocked = is_state('binary_sensor.balcony_power_blocked', 'on') %}
+            {% set override = states('sensor.balcony_power_override') %}
+            {% set target = states('binary_sensor.balcony_power_target') %}
+            {% set min_guard = is_state('timer.balcony_power_min_guard', 'active') %}
+            {% set occ = is_state('binary_sensor.balcony_presence', 'on') %}
+            {% set phase_allowed = states('sensor.day_time_phase') in ['dim', 'night'] %}
+            {% set lu_guard = is_state('binary_sensor.lu_balcony_guard', 'on') %}
+            {% set light_on = is_state('light.balcony_virtual', 'on') %}
+            {% if blocked %}
+              Blocked
+            {% elif override in ['on', 'off'] %}
+              Override({{ override }})
+            {% elif target == 'on' %}
+              {% if min_guard %}
+                Minimum Guard
+              {% elif occ and phase_allowed and not lu_guard %}
+                Occupied
+              {% elif occ and light_on %}
+                Occupancy Retention
+              {% else %}
+                Delayed Off
+              {% endif %}
+            {% elif target == 'off' %}
+              {% if occ and not phase_allowed %}
+                Phase Not Allowed
+              {% elif occ and lu_guard %}
+                Sufficient Ambient Light
+              {% else %}
+                No Demand
+              {% endif %}
+            {% else %}
+              Invalid
+            {% endif %}
+
+    - binary_sensor:
+        - name: "Balcony Power Target"
+          unique_id: balcony_power_target
+          state: >-
+            {% set occ = is_state('binary_sensor.balcony_presence', 'on') %}
+            {% set phase_allowed = states('sensor.day_time_phase') in ['dim', 'night'] %}
+            {% set lu_guard = is_state('binary_sensor.lu_balcony_guard', 'on') %}
+            {% set guard = is_state('timer.balcony_power_min_guard', 'active') %}
+            {% set light_on = is_state('light.balcony_virtual', 'on') %}
+            {{ guard or (occ and ((phase_allowed and not lu_guard) or light_on)) }}
+          delay_off:
+            seconds: 10
+          icon: >-
+            {{ 'mdi:lightbulb-auto' if is_state(this.entity_id, 'on')
+              else 'mdi:lightbulb-auto-outline' }}
+
+        - name: "Balcony Power Blocked"
+          unique_id: balcony_power_blocked
+          state: >-
+            {{ is_state('input_boolean.balcony_power_blocked_stop', 'on')
+               or is_state('input_boolean.balcony_power_blocked_pause', 'on') }}
+          icon: >-
+            {{ 'mdi:lightbulb-off' if is_state(this.entity_id, 'on')
+              else 'mdi:lightbulb-auto' }}
+
+        # ========== Environment ==========
+        - name: "LU Balcony Guard"
+          unique_id: lu_balcony_guard
+          device_class: light
+          state: >-
+            {% set lux = states('sensor.lu_balcony_illuminance') | float(0) %}
+            {% set th = 45 %}
+
+            {{ lux > th }}
+
+          icon: >-
+            {% set lux = states('sensor.lu_balcony_illuminance') | float(0) %}
+            {{ 'mdi:lightbulb-on' if lux > 45 else 'mdi:lightbulb-off' }}
+
+          attributes:
+            threshold_lux: 45
+            current_lux: "{{ states('sensor.lu_balcony_illuminance') | float(0) }}"
+
+  automation:
+    - id: balcony_power_controller
+      alias: "[Balcony] Power Controller"
+      use_blueprint:
+        path: juan/controller/power_controller_bp.yaml
+        input:
+          actuator_entity: light.balcony_virtual
+          power_target: binary_sensor.balcony_power_target
+          power_override: sensor.balcony_power_override
+          power_blocked: binary_sensor.balcony_power_blocked
+          on_mode: simple
+
+    - id: balcony_auto_pause_clear
+      alias: "[Balcony] Auto Pause Clear"
+      use_blueprint:
+        path: juan/auto_pause_clear_bp.yaml
+        input:
+          occupancy_sensor: binary_sensor.balcony_presence
+          auto_pause_helper: input_boolean.balcony_power_blocked_pause
+          debug: false
+
+    - id: balcony_power_min_guard_controller
+      alias: "[Balcony] Power Minimum Guard"
+      use_blueprint:
+        path: juan/controller/power_min_guard_bp.yaml
+        input:
+          actuator_entity: light.balcony_virtual
+          guard_timer: timer.balcony_power_min_guard

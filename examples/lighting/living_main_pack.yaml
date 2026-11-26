@@ -1,0 +1,142 @@
+# Reference configuration: virtual light and scene execution are external dependencies.
+living_main_pack:
+  timer:
+    living_main_power_min_guard: {name: Living Main Power Minimum On Guard, duration: "00:00:50"}
+
+  input_select:
+    living_main_current_profile:   { name: Living Main Current Profile,   options: ["1","2","3","4","5","6","7","8","9","10"] }
+
+  template:
+    - sensor:
+        - name: Living Main Power Override
+          unique_id: living_main_power_override
+          state: >-
+            {% set enabled = is_state('input_boolean.living_combo_enabled', 'on') %}
+            {% set combo = states('input_select.living_main_combo_power') %}
+            {{ 'off' if enabled and combo == 'off' else 'none' }}
+
+        - name: "Living Main Power Reason"
+          unique_id: living_main_power_reason
+          state: >-
+            {% set blocked = is_state('binary_sensor.living_power_blocked', 'on') %}
+            {% set override = states('sensor.living_main_power_override') %}
+            {% set target = states('binary_sensor.living_main_power_target') %}
+            {% set min_guard = is_state('timer.living_main_power_min_guard', 'active') %}
+            {% set area_occ = is_state('binary_sensor.living_area_presence', 'on') %}
+            {% set lu_guard = is_state('binary_sensor.lu_living_guard', 'on') %}
+            {% set light_on = is_state('light.living_virtual', 'on') %}
+
+            {% if blocked %}
+              Blocked
+            {% elif override in ['on', 'off'] %}
+              Composition({{ override }})
+            {% elif target == 'on' %}
+              {% if min_guard %}
+                Minimum Guard
+              {% elif area_occ and not lu_guard %}
+                Area Occupied
+              {% elif area_occ and light_on %}
+                Area Occupancy Retention
+              {% else %}
+                Delayed Off
+              {% endif %}
+            {% elif target == 'off' %}
+              No Demand
+            {% else %}
+              Invalid
+            {% endif %}
+
+        - name: Living Main Profile Override
+          unique_id: living_main_profile_override
+          state: >-
+            {% set enabled = is_state('input_boolean.living_combo_enabled', 'on') %}
+            {% set combo = states('input_select.living_main_combo_scene') %}
+            {{ combo if enabled and combo in ['1', '2', '3', '4', '5', '6'] else 'none' }}
+
+        - name: "Living Main Profile Target"
+          unique_id: living_main_profile_target
+          state: >-
+            {% set tp = states('input_select.time_profile') %}
+            {% set time_map = {'1':'4', '2':'1', '3':'1', '4':'2'} %}
+
+            {{ time_map.get(tp, '1') }}
+
+        - name: "Living Main Profile Reason"
+          unique_id: living_main_profile_reason
+          state: >-
+            {% set blocked = is_state('binary_sensor.living_profile_blocked', 'on') %}
+            {% set override = states('sensor.living_main_profile_override') %}
+            {% set target = states('sensor.living_main_profile_target') %}
+            {% set current = states('input_select.living_main_current_profile') %}
+            {% set tp = states('input_select.time_profile') %}
+            {% set comp = states('input_select.living_composition_key') %}
+            {% set valid = ['1','2','3','4','5','6','7','8','9','10','11','12','13','14','15'] %}
+
+            {% if blocked %}
+              Blocked ({{ current }})
+            {% elif override in valid %}
+              Composition ({{ override }})
+            {% elif target in valid %}
+              Time Profile {{ tp }} ({{ target }})
+            {% else %}
+              Invalid
+            {% endif %}
+
+    - binary_sensor:
+        - name: "Living Main Power Target"
+          unique_id: living_main_power_target
+          state: >-
+            {% set area_occ = is_state('binary_sensor.living_area_presence', 'on') %}
+            {% set lu_guard = is_state('binary_sensor.lu_living_guard', 'on') %}
+            {% set min_guard = is_state('timer.living_main_power_min_guard', 'active') %}
+            {% set light_on = is_state('light.living_virtual', 'on') %}
+
+            {{
+              min_guard
+              or (area_occ and (not lu_guard or light_on))
+            }}
+          delay_off:
+            seconds: 10
+          icon: >-
+            {{ 'mdi:lightbulb-auto' if is_state(this.entity_id, 'on')
+              else 'mdi:lightbulb-auto-outline' }}
+
+
+  automation:
+    - id: living_main_power_controller
+      alias: "[Living] Main Power Controller"
+      use_blueprint:
+        path: juan/controller/power_controller_bp.yaml
+        input:
+          actuator_entity: light.living_virtual
+          power_target: binary_sensor.living_main_power_target
+          power_override: sensor.living_main_power_override
+          power_blocked: binary_sensor.living_power_blocked
+          on_mode: simple
+          actuator_key: living_virtual
+          profile_target: sensor.living_main_profile_target
+          profile_override: sensor.living_main_profile_override
+          profile_blocked: binary_sensor.living_profile_blocked
+          current_profile: input_select.living_main_current_profile
+
+    - id: living_main_profile_controller
+      alias: "[Living] Main Profile Controller"
+      use_blueprint:
+        path: juan/controller/profile_controller_bp.yaml
+        input:
+          actuator_key: living_virtual
+          actuator_light: light.living_virtual
+          profile_target: sensor.living_main_profile_target
+          profile_override: sensor.living_main_profile_override
+          profile_blocked: binary_sensor.living_profile_blocked
+          power_override: sensor.living_main_power_override
+
+    # Light-off cleanup is outside the scope of this reference excerpt.
+
+    - id: living_main_power_min_guard_controller
+      alias: "[Living] Main Power Minimum Guard"
+      use_blueprint:
+        path: juan/controller/power_min_guard_bp.yaml
+        input:
+          actuator_entity: light.living_virtual
+          guard_timer: timer.living_main_power_min_guard
